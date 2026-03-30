@@ -1,0 +1,35 @@
+bind: "0.0.0.0:9222"
+auth_token: "change-me-to-a-secret"
+
+commands:
+  - name: rkdeveloptool
+    binary: /usr/bin/rkdeveloptool
+    description: "Rockchip USB development tool"
+    allowed_args:
+      - pattern: "ld"
+      - pattern: "rd {offset} {size}"
+      - pattern: "wl {offset} {file}"
+        file_args: ["file"]
+      - pattern: "db {file}"
+        file_args: ["file"]
+      - pattern: "ul {file}"
+        file_args: ["file"]
+      - pattern: "ef"
+      - pattern: "td"
+    timeout_secs: 120
+
+  - name: lsusb
+    binary: /usr/bin/lsusb
+    description: "List USB devices"
+    allowed_args:
+      - pattern: ""
+      - pattern: "-v -d {vid_pid}"
+    timeout_secs: 10
+
+  - name: dmesg
+    binary: /usr/bin/dmesg
+    description: "View kernel messages (useful for USB debug)"
+    allowed_args:
+      - pattern: "--time-format iso -T"
+      - pattern: "--time-format iso -T -w"
+    timeout_secs: 10
