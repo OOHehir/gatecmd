@@ -6,6 +6,8 @@ use std::path::Path;
 pub struct Config {
     pub bind: String,
     pub auth_token: String,
+    /// All file_args must resolve under this directory. Canonicalized at load time.
+    pub file_root: String,
     pub commands: Vec<CommandConfig>,
 }
 
@@ -37,7 +39,22 @@ impl Config {
         let config: Config =
             serde_yaml::from_str(&contents).context("Failed to parse config YAML")?;
 
-        // Validate
+        // Validate file_root
+        let file_root = Path::new(&config.file_root);
+        if !file_root.is_absolute() {
+            anyhow::bail!("file_root must be an absolute path, got: {}", config.file_root);
+        }
+        if !file_root.is_dir() {
+            anyhow::bail!("file_root directory does not exist: {}", config.file_root);
+        }
+        // Canonicalize to resolve any symlinks
+        let canonical_root = file_root
+            .canonicalize()
+            .with_context(|| format!("Failed to canonicalize file_root: {}", config.file_root))?;
+        let mut config = config;
+        config.file_root = canonical_root.to_string_lossy().into_owned();
+
+        // Validate commands
         for cmd in &config.commands {
             if !Path::new(&cmd.binary).is_absolute() {
                 anyhow::bail!(

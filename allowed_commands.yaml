@@ -1,5 +1,12 @@
+# This YAML file defines the allowed commands and their arguments for a command execution service.
+
 bind: "0.0.0.0:9222"
-auth_token: "change-me-to-a-secret"
+
+# This token is used for authenticating API requests to the command execution service. It should be kept secret and secure.
+auth_token: "your_secure_token_here"
+
+# The root directory for file operations. All file paths in command arguments will be relative to this directory, and file access will be restricted to this directory and its subdirectories for security reasons.
+file_root: "/home/vm/shared"
 
 commands:
   - name: rkdeveloptool
@@ -25,6 +32,54 @@ commands:
       - pattern: ""
       - pattern: "-v -d {vid_pid}"
     timeout_secs: 10
+
+  - name: upgrade_tool
+    binary: /home/repo/gatecmd/upgrade_tool_v2.17_for_linux/upgrade_tool
+    description: "Rockchip command-line firmware development tool (v2.17)"
+    allowed_args:
+      - pattern: "ld"
+      - pattern: "db {file}"
+        file_args: ["file"]
+      - pattern: "ul {file}"
+        file_args: ["file"]
+      - pattern: "ul {file} -noreset"
+        file_args: ["file"]
+      - pattern: "ul {file} {storage}"
+        file_args: ["file"]
+      - pattern: "uf {file}"
+        file_args: ["file"]
+      - pattern: "uf {file} -noreset"
+        file_args: ["file"]
+      - pattern: "wl {offset} {file}"
+        file_args: ["file"]
+      - pattern: "rl {offset} {size} {file}"
+        file_args: ["file"]
+      - pattern: "di -p {file}"
+        file_args: ["file"]
+      - pattern: "di -k {file}"
+        file_args: ["file"]
+      - pattern: "di -b {file}"
+        file_args: ["file"]
+      - pattern: "di -r {file}"
+        file_args: ["file"]
+      - pattern: "di -s {file}"
+        file_args: ["file"]
+      - pattern: "di -u {file}"
+        file_args: ["file"]
+      - pattern: "di -m {file}"
+        file_args: ["file"]
+      - pattern: "di -t {file}"
+        file_args: ["file"]
+      - pattern: "ef {file}"
+        file_args: ["file"]
+      - pattern: "el {offset} {size}"
+      - pattern: "rd {mode}"
+      - pattern: "rfi"
+      - pattern: "rci"
+      - pattern: "pl"
+      - pattern: "ssd"
+      - pattern: "td"
+    timeout_secs: 120
 
   - name: dmesg
     binary: /usr/bin/dmesg

@@ -7,10 +7,12 @@ use std::path::Path;
 const FORBIDDEN_CHARS: &[char] = &[';', '|', '&', '$', '`', '(', ')', '{', '}', '>', '<', '\n', '\r', '\\'];
 
 /// Validate and resolve a command invocation against the allowlist.
-/// Returns the binary path and the validated argument list.
+/// Returns the validated argument list.
+/// `file_root` is the canonicalized directory that all file args must reside under.
 pub fn validate_command(
     cmd_config: &CommandConfig,
     args_str: &str,
+    file_root: &str,
 ) -> Result<Vec<String>> {
     let args_str = args_str.trim();
 
@@ -31,10 +33,10 @@ pub fn validate_command(
     // Try to match against each allowed pattern
     for pattern in &cmd_config.allowed_args {
         if let Some(bindings) = match_pattern(pattern, &provided_args) {
-            // Validate file args for path traversal
+            // Validate file args for path traversal and file_root containment
             for file_param in &pattern.file_args {
                 if let Some(value) = bindings.get(file_param) {
-                    validate_file_arg(value)?;
+                    validate_file_arg(value, file_root)?;
                 }
             }
             return Ok(provided_args.iter().map(|s| s.to_string()).collect());
@@ -84,15 +86,33 @@ fn match_pattern(
     Some(bindings)
 }
 
-fn validate_file_arg(path_str: &str) -> Result<()> {
+/// Validate that a path is safe and under file_root.
+/// Public so the file management tools can reuse it.
+pub fn validate_path_under_root(path_str: &str, file_root: &str) -> Result<()> {
+    validate_file_arg(path_str, file_root)
+}
+
+fn validate_file_arg(path_str: &str, file_root: &str) -> Result<()> {
     // Reject path traversal
     if path_str.contains("..") {
         bail!("Path traversal ('..') not allowed in file argument: {}", path_str);
     }
 
     // Must be an absolute path
-    if !Path::new(path_str).is_absolute() {
+    let path = Path::new(path_str);
+    if !path.is_absolute() {
         bail!("File argument must be an absolute path: {}", path_str);
+    }
+
+    // Must be under file_root — use lexical check since the file may not exist yet
+    // (the agent may be about to write it). file_root is already canonicalized at config load.
+    if !path_str.starts_with(file_root) ||
+       (path_str.len() > file_root.len() && !path_str[file_root.len()..].starts_with('/')) {
+        bail!(
+            "File argument must be under file_root '{}', got: {}",
+            file_root,
+            path_str
+        );
     }
 
     Ok(())
@@ -126,10 +146,12 @@ mod tests {
         }
     }
 
+    const TEST_FILE_ROOT: &str = "/tmp/shared";
+
     #[test]
     fn test_literal_match() {
         let cmd = test_cmd();
-        let result = validate_command(&cmd, "ld");
+        let result = validate_command(&cmd, "ld", TEST_FILE_ROOT);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), vec!["ld"]);
     }
@@ -137,7 +159,7 @@ mod tests {
     #[test]
     fn test_empty_args() {
         let cmd = test_cmd();
-        let result = validate_command(&cmd, "");
+        let result = validate_command(&cmd, "", TEST_FILE_ROOT);
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
     }
@@ -145,43 +167,59 @@ mod tests {
     #[test]
     fn test_param_match() {
         let cmd = test_cmd();
-        let result = validate_command(&cmd, "wl 0x0000 /tmp/firmware.img");
+        let result = validate_command(&cmd, "wl 0x0000 /tmp/shared/firmware.img", TEST_FILE_ROOT);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), vec!["wl", "0x0000", "/tmp/firmware.img"]);
+        assert_eq!(result.unwrap(), vec!["wl", "0x0000", "/tmp/shared/firmware.img"]);
     }
 
     #[test]
     fn test_reject_shell_injection() {
         let cmd = test_cmd();
-        let result = validate_command(&cmd, "ld; rm -rf /");
+        let result = validate_command(&cmd, "ld; rm -rf /", TEST_FILE_ROOT);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_reject_pipe() {
         let cmd = test_cmd();
-        let result = validate_command(&cmd, "ld | cat /etc/passwd");
+        let result = validate_command(&cmd, "ld | cat /etc/passwd", TEST_FILE_ROOT);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_reject_path_traversal() {
         let cmd = test_cmd();
-        let result = validate_command(&cmd, "wl 0x0000 /tmp/../etc/shadow");
+        let result = validate_command(&cmd, "wl 0x0000 /tmp/shared/../etc/shadow", TEST_FILE_ROOT);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_reject_relative_file_path() {
         let cmd = test_cmd();
-        let result = validate_command(&cmd, "wl 0x0000 firmware.img");
+        let result = validate_command(&cmd, "wl 0x0000 firmware.img", TEST_FILE_ROOT);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_reject_unmatched_pattern() {
         let cmd = test_cmd();
-        let result = validate_command(&cmd, "delete everything");
+        let result = validate_command(&cmd, "delete everything", TEST_FILE_ROOT);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_reject_file_outside_root() {
+        let cmd = test_cmd();
+        let result = validate_command(&cmd, "wl 0x0000 /etc/passwd", TEST_FILE_ROOT);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("file_root"));
+    }
+
+    #[test]
+    fn test_reject_file_root_prefix_trick() {
+        // /tmp/shared_evil should not match /tmp/shared
+        let cmd = test_cmd();
+        let result = validate_command(&cmd, "wl 0x0000 /tmp/shared_evil/fw.img", TEST_FILE_ROOT);
         assert!(result.is_err());
     }
 }
