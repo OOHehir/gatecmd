@@ -35,6 +35,34 @@ Built for situations where tools like `rkdeveloptool` and `upgrade_tool` don't w
 - **Bearer token auth** -- shared secret on every request
 - **Per-command timeouts** -- prevents hangs
 
+## Installation
+
+### Option A: Download pre-built binary
+
+Download the latest release from [GitHub Releases](https://github.com/OOHehir/gatecmd/releases):
+
+```bash
+# Download the binary
+curl -L -o gatecmd https://github.com/OOHehir/gatecmd/releases/download/v1.0.0/gatecmd
+
+# Make it executable
+chmod +x gatecmd
+
+# Optionally move it to your PATH
+sudo mv gatecmd /usr/local/bin/
+```
+
+### Option B: Build from source
+
+Requires Rust 1.75+.
+
+```bash
+git clone https://github.com/OOHehir/gatecmd.git
+cd gatecmd
+cargo build --release
+# Binary is at ./target/release/gatecmd
+```
+
 ## Quick start
 
 ### 1. Configure allowed commands
@@ -112,11 +140,14 @@ All file arguments are validated to be under `file_root`. Attempts to reference 
 
 gatecmd includes built-in file management tools (`list_files`, `copy_file`, `remove_file`) scoped to the shared directory. These let the agent stage files for flashing without depending on the VM shared mount being perfectly in sync. All paths are relative to `file_root` and subject to the same traversal protections.
 
-### 3. Build and run on the host
+### 3. Run on the host
 
 ```bash
-cargo build --release
-./target/release/gatecmd allowed_commands.yaml
+# If installed to PATH:
+gatecmd allowed_commands.yaml
+
+# Or run directly from a download / build:
+./gatecmd allowed_commands.yaml
 ```
 
 ### 4. Connect from the VM
@@ -174,7 +205,7 @@ See [`upgrade_tool_v2.17_for_linux/upgrade_tool_user_guide.md`](upgrade_tool_v2.
 
 - `RUST_LOG` -- set log level (e.g. `RUST_LOG=debug`)
 
-## Building
+## Building from source
 
 Requires Rust 1.75+.
 
