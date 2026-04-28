@@ -1,6 +1,7 @@
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::io::AsyncBufReadExt;
 
 use rmcp::{
     ErrorData as McpError,
@@ -47,6 +48,17 @@ pub struct RemoveFileArgs {
     /// Path relative to the shared file root
     pub path: String,
 }
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct WriteFileArgs {
+    /// Destination path relative to the shared file root
+    pub path: String,
+    /// Base64-encoded file content
+    pub content_base64: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct BoardStatusArgs {}
 
 #[derive(Clone)]
 pub struct HostCmdServer {
@@ -103,59 +115,104 @@ impl HostCmdServer {
             )
         })?;
 
-        let validated_args = validate_command(cmd_config, &args.args, &self.config.file_root).map_err(|e| {
-            McpError::invalid_params(format!("Argument validation failed: {e}"), None)
-        })?;
+        let (cmd_args, pattern_timeout) =
+            validate_command(cmd_config, &args.args, &self.config.file_root).map_err(|e| {
+                McpError::invalid_params(format!("Argument validation failed: {e}"), None)
+            })?;
+
+        let timeout_secs = pattern_timeout.unwrap_or(cmd_config.timeout_secs);
 
         tracing::info!(
             command = %cmd_config.name,
             binary = %cmd_config.binary,
-            args = ?validated_args,
+            args = ?cmd_args,
+            timeout_secs = timeout_secs,
             "Executing command"
         );
 
-        let timeout = Duration::from_secs(cmd_config.timeout_secs);
+        let mut child = match Command::new(&cmd_config.binary)
+            .args(&cmd_args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to spawn command");
+                return Ok(CallToolResult::error(vec![Content::text(
+                    format!("Failed to spawn: {e}"),
+                )]));
+            }
+        };
 
-        let result = tokio::time::timeout(timeout, async {
-            Command::new(&cmd_config.binary)
-                .args(&validated_args)
-                .output()
-                .await
-        })
-        .await;
+        let stdout_buf: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let stderr_buf: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
 
-        match result {
-            Ok(Ok(output)) => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let exit_code = output.status.code().unwrap_or(-1);
+        let stdout_stream = child.stdout.take().unwrap();
+        let stderr_stream = child.stderr.take().unwrap();
 
-                let mut response = format!("Exit code: {exit_code}\n");
-                if !stdout.is_empty() {
-                    response.push_str(&format!("\n--- stdout ---\n{stdout}"));
-                }
-                if !stderr.is_empty() {
-                    response.push_str(&format!("\n--- stderr ---\n{stderr}"));
-                }
+        let so = stdout_buf.clone();
+        let se = stderr_buf.clone();
 
-                if output.status.success() {
-                    Ok(CallToolResult::success(vec![Content::text(response)]))
-                } else {
-                    Ok(CallToolResult::error(vec![Content::text(response)]))
-                }
+        let stdout_handle = tokio::spawn(async move {
+            let mut reader = tokio::io::BufReader::new(stdout_stream).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                so.lock().unwrap().push(line);
+            }
+        });
+        let stderr_handle = tokio::spawn(async move {
+            let mut reader = tokio::io::BufReader::new(stderr_stream).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                se.lock().unwrap().push(line);
+            }
+        });
+
+        let timeout = Duration::from_secs(timeout_secs);
+        let timed_out;
+        let exit_code;
+
+        match tokio::time::timeout(timeout, child.wait()).await {
+            Ok(Ok(status)) => {
+                timed_out = false;
+                exit_code = status.code().unwrap_or(-1);
             }
             Ok(Err(e)) => {
-                tracing::error!(error = %e, "Failed to execute command");
-                Ok(CallToolResult::error(vec![Content::text(
-                    format!("Failed to execute: {e}"),
-                )]))
+                tracing::error!(error = %e, "Failed to wait for command");
+                let _ = tokio::join!(stdout_handle, stderr_handle);
+                return Ok(CallToolResult::error(vec![Content::text(
+                    format!("Failed to wait for command: {e}"),
+                )]));
             }
             Err(_) => {
-                tracing::warn!("Command timed out after {}s", cmd_config.timeout_secs);
-                Ok(CallToolResult::error(vec![Content::text(
-                    format!("Command timed out after {}s", cmd_config.timeout_secs),
-                )]))
+                timed_out = true;
+                exit_code = -1;
+                tracing::warn!("Command timed out after {}s", timeout_secs);
+                let _ = child.kill().await;
             }
+        }
+
+        let _ = tokio::join!(stdout_handle, stderr_handle);
+
+        let stdout_text = stdout_buf.lock().unwrap().join("\n");
+        let stderr_text = stderr_buf.lock().unwrap().join("\n");
+
+        let mut response = if timed_out {
+            format!("Command timed out after {timeout_secs}s (partial output follows)\n")
+        } else {
+            format!("Exit code: {exit_code}\n")
+        };
+
+        if !stdout_text.is_empty() {
+            response.push_str(&format!("\n--- stdout ---\n{stdout_text}"));
+        }
+        if !stderr_text.is_empty() {
+            response.push_str(&format!("\n--- stderr ---\n{stderr_text}"));
+        }
+
+        if timed_out || exit_code != 0 {
+            Ok(CallToolResult::error(vec![Content::text(response)]))
+        } else {
+            Ok(CallToolResult::success(vec![Content::text(response)]))
         }
     }
 
@@ -271,6 +328,98 @@ impl HostCmdServer {
                 format!("Failed to remove '{}': {e}", path.display()),
             )])),
         }
+    }
+
+    /// Write a file to the shared file root from base64-encoded content.
+    #[tool(description = "Write a file to the shared file root. Content must be base64-encoded. Useful for uploading DTBs, config files, and other small files without needing the shared folder mount. Max 10 MB.")]
+    async fn write_file(
+        &self,
+        Parameters(args): Parameters<WriteFileArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        use base64::Engine as _;
+
+        let path = self.resolve_path(&args.path)?;
+
+        let content = base64::engine::general_purpose::STANDARD
+            .decode(&args.content_base64)
+            .map_err(|e| McpError::invalid_params(format!("Invalid base64: {e}"), None))?;
+
+        const MAX_BYTES: usize = 10 * 1024 * 1024;
+        if content.len() > MAX_BYTES {
+            return Err(McpError::invalid_params(
+                format!(
+                    "File too large: {} bytes (max {} bytes)",
+                    content.len(),
+                    MAX_BYTES
+                ),
+                None,
+            ));
+        }
+
+        if let Some(parent) = path.parent() {
+            if let Err(e) = tokio::fs::create_dir_all(parent).await {
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Failed to create directory '{}': {e}",
+                    parent.display()
+                ))]));
+            }
+        }
+
+        tracing::info!(path = %path.display(), bytes = content.len(), "Writing file");
+
+        match tokio::fs::write(&path, &content).await {
+            Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
+                "Written {} bytes to {}",
+                content.len(),
+                path.display()
+            ))])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Failed to write '{}': {e}",
+                path.display()
+            ))])),
+        }
+    }
+
+    /// Return the current USB connection state of a Rockchip 2207 board.
+    #[tool(description = "Detect Rockchip 2207 board state via lsusb. Returns whether the board is in maskrom mode (ready to flash), normal boot (RNDIS active), or disconnected.")]
+    async fn board_status(
+        &self,
+        Parameters(_args): Parameters<BoardStatusArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let output = match Command::new("/usr/bin/lsusb").output().await {
+            Ok(o) => o,
+            Err(e) => {
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Failed to run lsusb: {e}"
+                ))]));
+            }
+        };
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let rockchip: Vec<&str> = stdout
+            .lines()
+            .filter(|line| line.contains("2207:"))
+            .collect();
+
+        let status = if rockchip.is_empty() {
+            "DISCONNECTED — no Rockchip 2207 device found on USB".to_string()
+        } else {
+            let mut lines = vec!["Rockchip device(s) detected:".to_string()];
+            for line in &rockchip {
+                let mode = if line.contains("2207:110c") {
+                    "MASKROM (ready to flash)"
+                } else if line.contains("2207:0019") {
+                    "NORMAL BOOT / RNDIS active"
+                } else {
+                    "UNKNOWN state"
+                };
+                lines.push(format!("  {} → {}", line.trim(), mode));
+            }
+            lines.join("\n")
+        };
+
+        tracing::info!("board_status: {}", status.lines().next().unwrap_or(""));
+        Ok(CallToolResult::success(vec![Content::text(status)]))
     }
 }
 

@@ -7,13 +7,13 @@ use std::path::Path;
 const FORBIDDEN_CHARS: &[char] = &[';', '|', '&', '$', '`', '(', ')', '{', '}', '>', '<', '\n', '\r', '\\'];
 
 /// Validate and resolve a command invocation against the allowlist.
-/// Returns the validated argument list.
+/// Returns the validated argument list and the matched pattern's optional timeout override.
 /// `file_root` is the canonicalized directory that all file args must reside under.
 pub fn validate_command(
     cmd_config: &CommandConfig,
     args_str: &str,
     file_root: &str,
-) -> Result<Vec<String>> {
+) -> Result<(Vec<String>, Option<u64>)> {
     let args_str = args_str.trim();
 
     // Check for forbidden characters in the raw input
@@ -39,7 +39,7 @@ pub fn validate_command(
                     validate_file_arg(value, file_root)?;
                 }
             }
-            return Ok(provided_args.iter().map(|s| s.to_string()).collect());
+            return Ok((provided_args.iter().map(|s| s.to_string()).collect(), pattern.timeout_secs));
         }
     }
 
@@ -133,14 +133,17 @@ mod tests {
                 ArgPattern {
                     pattern: "ld".into(),
                     file_args: vec![],
+                    timeout_secs: None,
                 },
                 ArgPattern {
                     pattern: "wl {offset} {file}".into(),
                     file_args: vec!["file".into()],
+                    timeout_secs: None,
                 },
                 ArgPattern {
                     pattern: "".into(),
                     file_args: vec![],
+                    timeout_secs: None,
                 },
             ],
         }
@@ -153,7 +156,8 @@ mod tests {
         let cmd = test_cmd();
         let result = validate_command(&cmd, "ld", TEST_FILE_ROOT);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), vec!["ld"]);
+        let (args, _) = result.unwrap();
+        assert_eq!(args, vec!["ld"]);
     }
 
     #[test]
@@ -161,7 +165,8 @@ mod tests {
         let cmd = test_cmd();
         let result = validate_command(&cmd, "", TEST_FILE_ROOT);
         assert!(result.is_ok());
-        assert!(result.unwrap().is_empty());
+        let (args, _) = result.unwrap();
+        assert!(args.is_empty());
     }
 
     #[test]
@@ -169,7 +174,8 @@ mod tests {
         let cmd = test_cmd();
         let result = validate_command(&cmd, "wl 0x0000 /tmp/shared/firmware.img", TEST_FILE_ROOT);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), vec!["wl", "0x0000", "/tmp/shared/firmware.img"]);
+        let (args, _) = result.unwrap();
+        assert_eq!(args, vec!["wl", "0x0000", "/tmp/shared/firmware.img"]);
     }
 
     #[test]

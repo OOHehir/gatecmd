@@ -3,10 +3,10 @@
 bind: "0.0.0.0:9222"
 
 # This token is used for authenticating API requests to the command execution service. It should be kept secret and secure.
-auth_token: "your_secure_token_here"
+auth_token: "lkjsdfksdfosudfiosdfoih525hjjkhjh"
 
 # The root directory for file operations. All file paths in command arguments will be relative to this directory, and file access will be restricted to this directory and its subdirectories for security reasons.
-file_root: "/home/vm/shared"
+file_root: "/home/repo/vm/vm-claude/shared"
 
 commands:
   - name: rkdeveloptool
@@ -23,7 +23,6 @@ commands:
         file_args: ["file"]
       - pattern: "ef"
       - pattern: "td"
-    timeout_secs: 120
 
   - name: lsusb
     binary: /usr/bin/lsusb
@@ -79,7 +78,7 @@ commands:
       - pattern: "pl"
       - pattern: "ssd"
       - pattern: "td"
-    timeout_secs: 120
+    timeout_secs: 600
 
   - name: dmesg
     binary: /usr/bin/dmesg
@@ -87,4 +86,5 @@ commands:
     allowed_args:
       - pattern: "--time-format iso -T"
       - pattern: "--time-format iso -T -w"
+        timeout_secs: 30
     timeout_secs: 10

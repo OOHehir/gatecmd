@@ -26,10 +26,12 @@ pub struct ArgPattern {
     pub pattern: String,
     #[serde(default)]
     pub file_args: Vec<String>,
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
 }
 
 fn default_timeout() -> u64 {
-    30
+    120
 }
 
 impl Config {
